@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ThemeToggle } from "@/components/theme-toggle"
+import mqtt from 'mqtt'
+
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -17,17 +19,73 @@ export default function MainPage() {
 
   useEffect(() => {
     fetchInitialData()
-    const subscription = supabase
-      .channel('aws-changes')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'awsdata' }, payload => {
-        console.log('Change received!', payload)
-        setLatestData(payload.new)
-        setLastUpdate(payload.new.created_at)
-      })
-      .subscribe()
 
+    // Setup MQTT connection
+    const brokerUrl = process.env.NEXT_PUBLIC_HIVEMQ_WEBSOCKET_URL;
+    const username = process.env.NEXT_PUBLIC_HIVEMQ_USERNAME;
+    const password = process.env.NEXT_PUBLIC_HIVEMQ_PASSWORD;
+    
+    const client = mqtt.connect(brokerUrl!, {
+      username: username,
+      password: password,
+      clean: true,
+      reconnectPeriod: 1000,
+    })
+    
+    client.on('connect', function () {
+      console.log('Connected to Logger')
+      client.subscribe('awsData', function (err) {
+        if (err) {
+        } else {
+        }
+      })
+    })
+    
+    client.on('message', async function (topic, message) {
+      console.log('Received message:', message.toString())
+      const data = JSON.parse(message.toString())
+
+      // Format the data
+      const formattedData = {
+        temp: data.Temp || null,
+        rh: data.Rh || null,
+        wind_direction: data['wind.Direction'] || null,
+        wind_speed: data['wind.Speed'] || null,
+        pressure: data.pressure || null,
+        radiation: data.radiation || null,
+        precipitation: data.precipitation || null,
+      }
+
+      // Update the latest data received via MQTT
+      setLatestData(formattedData)
+      setLastUpdate(new Date().toLocaleString())
+
+      // Store the data in Supabase
+      const { data: insertedData, error } = await supabase
+        .from('awsdata')
+        .insert([
+          {
+            temp: formattedData.temp,
+            rh: formattedData.rh,
+            wind_direction: formattedData.wind_direction,
+            wind_speed: formattedData.wind_speed,
+            pressure: formattedData.pressure,
+            radiation: formattedData.radiation,
+            precipitation: formattedData.precipitation,
+            created_at: new Date().toISOString(),
+          },
+        ])
+
+      if (error) {
+        console.error('Error storing data', error)
+      } else {
+        console.log('Data stored', insertedData)
+      }
+    })
+
+    // Clean up the MQTT connection on unmount
     return () => {
-      subscription.unsubscribe()
+      client.end()
     }
   }, [])
 
@@ -131,3 +189,4 @@ function WeatherCard({ title, value }: { title: string; value: string }) {
     </Card>
   )
 }
+  
